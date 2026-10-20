@@ -931,6 +931,100 @@ app.get(
   }
 );
 
+/*
+app.patch(
+  "/api/clients/:id",
+  authenticateToken,
+  async (req: AuthRequest, res): Promise<void> => {
+    if (!req.user) {
+      res.status(401).json({ error: "Authentication required" });
+      return;
+    }
+
+    if (req.user.role === "VIEWER") {
+      res.status(403).json({ error: "Forbidden" });
+      return;
+    }
+
+    const { name, email, phone, kycStatus, relationshipManagerId, version } =
+      req.body;
+
+    if (
+      typeof name !== "string" ||
+      !name.trim() ||
+      !Number.isInteger(version) ||
+      !["APPROVED", "PENDING", "EXPIRED", "REJECTED"].includes(kycStatus)
+    ) {
+      res.status(400).json({ error: "Invalid client data or version" });
+      return;
+    }
+    // Retrieve previous client values for audit
+    const [existingRows] = await pool.execute(
+      `SELECT name, email, phone,
+              kyc_status AS kycStatus,
+              relationship_manager_id AS relationshipManagerId
+       FROM clients
+       WHERE id = ?`,
+      [req.params.id]
+    );
+
+    const oldClient = (existingRows as any[])[0];
+    try {
+      const [result] = await pool.execute(
+        `UPDATE clients
+         SET name = ?, email = ?, phone = ?, kyc_status = ?,
+             relationship_manager_id = ?, version = version + 1
+         WHERE id = ? AND version = ?`,
+        [
+          name.trim(),
+          email || null,
+          phone || null,
+          kycStatus,
+          relationshipManagerId || null,
+          req.params.id,
+          version,
+        ]
+      );
+
+      if ((result as { affectedRows: number }).affectedRows === 0) {
+        res.status(409).json({
+          error: "Client not found or version conflict",
+        });
+        return;
+      }
+
+     
+      // Record the client change in the audit trail
+      await pool.execute(
+        `INSERT INTO audit_logs
+          (entity_type, entity_id, action, changed_by, old_values, new_values)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          "CLIENT",
+          req.params.id,
+          "UPDATE",
+          req.user.id,
+          JSON.stringify(oldClient),
+          JSON.stringify({
+            name: name.trim(),
+            email: email || null,
+            phone: phone || null,
+            kycStatus,
+            relationshipManagerId: relationshipManagerId || null,
+            version: version + 1,
+          }),
+        ]
+      );
+
+      res.json({ message: "Client updated", version: version + 1 });
+
+    } catch (error) {
+      console.error("Client update failed:", error);
+      res.status(500).json({ error: "Failed to update client" });
+    }
+  }
+);*/
+
 
 app.patch(
   "/api/clients/:id",
@@ -959,8 +1053,31 @@ app.patch(
       return;
     }
 
+    const connection = await pool.getConnection();
+
     try {
-      const [result] = await pool.execute(
+      await connection.beginTransaction();
+
+      const [existingRows] = await connection.execute(
+        `SELECT name, email, phone,
+                kyc_status AS kycStatus,
+                relationship_manager_id AS relationshipManagerId,
+                version
+         FROM clients
+         WHERE id = ?
+         FOR UPDATE`,
+        [req.params.id]
+      );
+
+      const oldClient = (existingRows as any[])[0];
+
+      if (!oldClient) {
+        await connection.rollback();
+        res.status(404).json({ error: "Client not found" });
+        return;
+      }
+
+      const [result] = await connection.execute(
         `UPDATE clients
          SET name = ?, email = ?, phone = ?, kyc_status = ?,
              relationship_manager_id = ?, version = version + 1
@@ -977,19 +1094,47 @@ app.patch(
       );
 
       if ((result as { affectedRows: number }).affectedRows === 0) {
+        await connection.rollback();
         res.status(409).json({
           error: "Client not found or version conflict",
         });
         return;
       }
 
+      await connection.execute(
+        `INSERT INTO audit_logs
+          (entity_type, entity_id, action, changed_by, old_values, new_values)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [
+          "CLIENT",
+          req.params.id,
+          "UPDATE",
+          req.user.id,
+          JSON.stringify(oldClient),
+          JSON.stringify({
+            name: name.trim(),
+            email: email || null,
+            phone: phone || null,
+            kycStatus,
+            relationshipManagerId: relationshipManagerId || null,
+            version: version + 1,
+          }),
+        ]
+      );
+
+      await connection.commit();
+
       res.json({ message: "Client updated", version: version + 1 });
     } catch (error) {
+      await connection.rollback();
       console.error("Client update failed:", error);
       res.status(500).json({ error: "Failed to update client" });
+    } finally {
+      connection.release();
     }
   }
 );
+
 
 app.get('/api/portfolios', authenticateToken, async (_req, res) => {
   try {

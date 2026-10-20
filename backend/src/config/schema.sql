@@ -98,3 +98,18 @@ CREATE TABLE IF NOT EXISTS invoice_lines (
     ON DELETE CASCADE,
   INDEX idx_invoice_lines_invoice (invoice_id)
 );
+
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+  entity_type ENUM('CLIENT', 'TRANSACTION', 'INVOICE') NOT NULL,
+  entity_id VARCHAR(50) NOT NULL,
+  action VARCHAR(50) NOT NULL,
+  changed_by INT NOT NULL,
+  changed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  old_values JSON NULL,
+  new_values JSON NULL,
+  CONSTRAINT fk_audit_logs_user
+    FOREIGN KEY (changed_by) REFERENCES users(id),
+  INDEX idx_audit_entity (entity_type, entity_id),
+  INDEX idx_audit_changed_at (changed_at)
+);
